@@ -1,0 +1,107 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: nightwilkin_db
+    environment:
+      POSTGRES_DB: nightwilkin_db
+      POSTGRES_USER: nightwilkin
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nightwilkin"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: nightwilkin_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: ./backend
+    container_name: nightwilkin_web
+    command: >
+      sh -c "python manage.py migrate &&
+             python manage.py collectstatic --noinput &&
+             daphne -b 0.0.0.0 -p 8000 nightwilkin.asgi:application"
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=True
+      - SECRET_KEY=django-insecure-dev-key-change-in-production
+      - DATABASE_NAME=nightwilkin_db
+      - DATABASE_USER=nightwilkin
+      - DATABASE_PASSWORD=password
+      - DATABASE_HOST=db
+      - DATABASE_PORT=5432
+      - REDIS_URL=redis://redis:6379/0
+      - ALLOWED_HOSTS=localhost,127.0.0.1,0.0.0.0,web
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery_worker:
+    build: ./backend
+    container_name: nightwilkin_celery_worker
+    command: celery -A nightwilkin worker -l info
+    volumes:
+      - ./backend:/app
+    environment:
+      - DEBUG=True
+      - SECRET_KEY=django-insecure-dev-key-change-in-production
+      - DATABASE_NAME=nightwilkin_db
+      - DATABASE_USER=nightwilkin
+      - DATABASE_PASSWORD=password
+      - DATABASE_HOST=db
+      - DATABASE_PORT=5432
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - db
+      - redis
+      - web
+
+  celery_beat:
+    build: ./backend
+    container_name: nightwilkin_celery_beat
+    command: celery -A nightwilkin beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    volumes:
+      - ./backend:/app
+    environment:
+      - DEBUG=True
+      - SECRET_KEY=django-insecure-dev-key-change-in-production
+      - DATABASE_NAME=nightwilkin_db
+      - DATABASE_USER=nightwilkin
+      - DATABASE_PASSWORD=password
+      - DATABASE_HOST=db
+      - DATABASE_PORT=5432
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - db
+      - redis
+      - web
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  default:
+    name: nightwilkin_network
